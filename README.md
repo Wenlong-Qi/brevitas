@@ -49,27 +49,27 @@ The general quantization style implemented is affine quantization, with a focus 
 
 ## Getting started
 
-Here's how a simple 4 bit weights, 8 bit activations LeNet looks like:
+Here's how a simple 3 bit weights, 4 bit activations LeNet looks like:
 
 
 ```python
 from torch.nn import Module
 import torch.nn.functional as F
-from brevitas.nn import QuantIdentity, QuantConv2d, QuantReLU, QuantLinear
+import brevitas.nn as qnn
 
-class QuantLeNet(Module):
+class LowPrecisionLeNet(Module):
     def __init__(self):
-        super(QuantLeNet, self).__init__()
-        self.quant_inp = QuantIdentity(bit_width=8)
-        self.conv1 = QuantConv2d(3, 6, 5, weight_bit_width=4)
-        self.relu1 = QuantReLU(bit_width=8)
-        self.conv2 = QuantConv2d(6, 16, 5, weight_bit_width=4)
-        self.relu2 = QuantReLU(bit_width=8)
-        self.fc1   = QuantLinear(16*5*5, 120, bias=True, weight_bit_width=4)
-        self.relu3 = QuantReLU(bit_width=8)
-        self.fc2   = QuantLinear(120, 84, bias=True, weight_bit_width=4)
-        self.relu4 = QuantReLU(bit_width=8)
-        self.fc3   = QuantLinear(84, 10, bias=False, weight_bit_width=4)
+        super(LowPrecisionLeNet, self).__init__()
+        self.quant_inp = qnn.QuantIdentity(bit_width=4)
+        self.conv1 = qnn.QuantConv2d(3, 6, 5, weight_bit_width=3)
+        self.relu1 = qnn.QuantReLU(bit_width=4)
+        self.conv2 = qnn.QuantConv2d(6, 16, 5, weight_bit_width=3)
+        self.relu2 = qnn.QuantReLU(bit_width=4)
+        self.fc1   = qnn.QuantLinear(16*5*5, 120, bias=True, weight_bit_width=3)
+        self.relu3 = qnn.QuantReLU(bit_width=4)
+        self.fc2   = qnn.QuantLinear(120, 84, bias=True, weight_bit_width=3)
+        self.relu4 = qnn.QuantReLU(bit_width=4)
+        self.fc3   = qnn.QuantLinear(84, 10, bias=False, weight_bit_width=3)
 
     def forward(self, x):
         out = self.quant_inp(x)
@@ -82,7 +82,121 @@ class QuantLeNet(Module):
         out = self.relu4(self.fc2(out))
         out = self.fc3(out)
         return out
+
+low_precision_lenet = LowPrecisionLeNet()
 ```
+
+The network defined above can be mapped to a low-precision integer-only accelerator.
+Export to FINN through a custom ONNX-based format allows to accelerate it dataflow-style on a Xilinx FPGA. So *after training*:
+
+```python
+from brevitas.export import FINNManager
+
+FINNManager.export(low_precision_lenet, input_shape=(1, 1, 28, 28), export_path='finn_lenet.onnx')
+```
+
+Targeting other toolchains that suppor the standard ONNX opset, such as onnxruntime, is also supported.
+Here we define a model with a mixture of floating-point and quantized layers:
+
+```python
+from torch import nn
+import torch.nn.functional as F
+import brevitas.nn as qnn
+from brevitas.quant.shifted_scaled_int import ShiftedUint8WeightPerTensorFloat as ONNXWeightQuant
+from brevitas.quant.shifted_scaled_int import ShiftedUint8ActPerTensorFloat as ONNXIOQuant
+from brevitas.quant.scaled_int import Int8Bias as ONNXBiasQuant
+
+class ONNXQuantLeNet(nn.Module):
+    def __init__(self):
+        super(ONNXQuantLeNet, self).__init__()
+        self.conv1 = qnn.QuantConv2d(
+            3, 6, 5, input_quant=ONNXIOQuant, weight_quant=ONNXWeightQuant, output_quant=ONNXIOQuant)
+        self.relu1 = nn.ReLU()
+        self.conv2 = qnn.QuantConv2d(
+            6, 16, 5, input_quant=ONNXIOQuant, weight_quant=ONNXWeightQuant, output_quant=ONNXIOQuant)
+        self.relu2 = nn.ReLU()
+        self.fc1   = qnn.QuantLinear(
+            16*5*5, 120, bias=True, input_quant=ONNXIOQuant, weight_quant=ONNXWeightQuant, 
+            bias_quant=ONNXBiasQuant, output_quant=ONNXIOQuant)
+        self.relu3 = nn.ReLU()
+        self.fc2   = nn.Linear(120, 84, bias=True)
+        self.relu4 = nn.ReLU()
+        self.fc3   = nn.Linear(84, 10, bias=False)
+
+    def forward(self, x):
+        out = self.relu1(self.conv1(x))
+        out = F.max_pool2d(out, 2)
+        out = self.relu2(self.conv2(out))
+        out = F.max_pool2d(out, 2)
+        out = out.view(out.size(0), -1)
+        out = self.relu3(self.fc1(out))
+        out = self.relu4(self.fc2(out))
+        out = self.fc3(out)
+        return out
+
+onnx_quant_lenet = ONNXQuantLeNet()
+```
+
+Onnxruntime support mostly uint8 by uint8 operators, so we import matching unsigned quantizers from `brevitas.quant`.
+Because `torch.nn` layers are being mixed with quantized `brevitas.nn` layers, during export *dequantization* operators will be inserted appropriately:
+
+```python
+from brevitas.export import StdONNXManager
+
+StdONNXManager.export(onnx_quant_lenet, input_shape=(1, 1, 28, 28), export_path='onnx_quant_lenet.onnx')
+```
+
+It's also possible to target Pytorch's own quantized inference layers:
+
+```python
+from torch import nn
+import torch.nn.functional as F
+import brevitas.nn as qnn
+from brevitas.quant.shifted_scaled_int import ShiftedUint8WeightPerTensorFloat as PTWeightQuant
+from brevitas.quant.shifted_scaled_int import ShiftedUint8ActPerTensorFloat
+
+
+class PTIOQuant(ShiftedUint8ActPerTensorFloat):
+    bit_width = 7
+    
+    
+class PTQuantLeNet(nn.Module):
+    def __init__(self):
+        super(PTQuantLeNet, self).__init__()
+        self.conv1 = qnn.QuantConv2d(
+            3, 6, 5, input_quant=PTIOQuant, weight_quant=PTWeightQuant, 
+            output_quant=PTIOQuant, return_quant_tensor=True)
+        self.relu1 = qnn.QuantReLU(act_quant=None)
+        self.conv2 = qnn.QuantConv2d(
+            6, 16, 5, weight_quant=PTWeightQuant, output_quant=PTIOQuant, 
+            return_quant_tensor=True)
+        self.relu2 = qnn.QuantReLU(act_quant=None)
+        self.fc1   = qnn.QuantLinear(
+            16*5*5, 120, bias=True, weight_quant=PTWeightQuant, 
+            output_quant=PTIOQuant)
+        self.relu3 = nn.ReLU()
+        self.fc2   = nn.Linear(120, 84, bias=True)
+        self.relu4 = nn.ReLU()
+        self.fc3   = nn.Linear(84, 10, bias=False)
+
+    def forward(self, x):
+        out = self.relu1(self.conv1(x))
+        out = F.max_pool2d(out, 2)
+        out = self.relu2(self.conv2(out))
+        out = F.max_pool2d(out, 2)
+        out = out.view(out.size(0), -1)
+        out = self.relu3(self.fc1(out))
+        out = self.relu4(self.fc2(out))
+        out = self.fc3(out)
+        return out
+
+pt_quant_lenet = PTQuantLeNet()
+```
+
+The syntax is similar to the previous case, but with a few differences. 
+For starters, FBGEMM works best with 7-bit activations, so we define a new PTIOQuant quantizer with that bit-width.
+Compared to standard ONNX, Pytorch supports more operations directly on quantized tensors. This let us avoid dequantization right before a ReLU.
+
 
 ## Documentation
 
@@ -104,6 +218,11 @@ Brevitas exposes a few settings that can be toggled through env variables.
     This is typically enabled when re-training from a floating-point checkpoint.
 
 ## F.A.Q.
+
+**Q: Pytorch supports quantization-aware training. Why should I use Brevitas?**
+
+**A:** Quantization in Pytorch is designed to target two specific CPU backends (FBGEMM and qnnpack) using a fixed set of algorithmic techniques that are mostly rooted in Google's "Quantizing deep convolutional networks for efficient inference: A whitepaper".
+Brevitas is designed as a platform to implement novel quantization algorithms to target a variety of hardware/backends adhering to a loose set of assumptions (i.e. uniform affine quantization).
 
 **Q: How can I train X/Y and run it on hardware W/Z? I can't find any documentation.**
 
