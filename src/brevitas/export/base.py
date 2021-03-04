@@ -9,6 +9,8 @@ from torch.nn import Module
 from brevitas.quant_tensor import QuantTensor
 from brevitas.utils.jit_utils import jit_trace_patched
 
+import brevitas.export as export
+
 
 def _override_quant_metadata_caching_mode(m: Module, enabled: bool):
     if hasattr(m, 'cache_quant_io_metadata_only'):
@@ -77,6 +79,17 @@ class BaseHandler(Module, ABC):
 
     def reset(self):
         pass
+
+
+class ExportContext:
+    def __init__(self, target):
+        self.target = target
+
+    def __enter__(self):
+        export.ongoing_export = self.target
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        export.ongoing_export = None
 
 
 class BaseManager(ABC):

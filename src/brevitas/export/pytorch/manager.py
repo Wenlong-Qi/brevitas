@@ -4,7 +4,7 @@ from torch import Tensor
 from torch.nn import Module
 
 from brevitas.quant_tensor import QuantTensor
-from brevitas.export.base import BaseManager
+from brevitas.export.base import BaseManager, ExportContext
 from .handler.parameter import PytorchQuantConv2dHandler
 from .handler.parameter import PytorchQuantConv1dHandler
 from .handler.parameter import PytorchQuantLinearHandler
@@ -15,6 +15,7 @@ from .handler.pool import PytorchQuantMaxPool1d, PytorchQuantMaxPool2d
 
 
 class PytorchQuantManager(BaseManager):
+    target_name = 'torch'
 
     handlers = [
         PytorchQuantMaxPool1d,
@@ -28,5 +29,6 @@ class PytorchQuantManager(BaseManager):
 
     @classmethod
     def export(cls, module: Module, input_t: Union[Tensor, QuantTensor]):
-        traced_module = cls.jit_trace(module, input_t)
+        with ExportContext(cls.target_name):
+            traced_module = cls.jit_trace(module, input_t)
         return traced_module

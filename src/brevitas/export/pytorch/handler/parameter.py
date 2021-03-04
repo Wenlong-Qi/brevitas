@@ -4,7 +4,6 @@ from abc import abstractmethod, ABC
 
 import torch
 from torch import Tensor
-from torch.nn.quantized import functional as qF
 
 from brevitas.nn import QuantConv2d, QuantConv1d, QuantLinear
 from brevitas.nn.quant_layer import QuantWeightBiasInputOutputLayer as QuantWBIOL
@@ -92,7 +91,7 @@ class PytorchQuantConv1dHandler(PytorchQuantConvNdHandler):
 
     @classmethod
     def prepare_qf(cls, module: QuantConv1d):
-        return qF.conv1d, cls.prepare_qf_kwargs(module)
+        return torch.nn.quantized.conv1d, cls.prepare_qf_kwargs(module)
 
 
 class PytorchQuantConv2dHandler(PytorchQuantConvNdHandler):
@@ -100,7 +99,7 @@ class PytorchQuantConv2dHandler(PytorchQuantConvNdHandler):
 
     @classmethod
     def prepare_qf(cls, module: QuantConv2d):
-        return qF.conv2d, cls.prepare_qf_kwargs(module)
+        return torch.nn.quantized.conv2d, cls.prepare_qf_kwargs(module)
 
 
 class PytorchQuantLinearHandler(PytorchQuantWBIOLHandler):
@@ -112,6 +111,6 @@ class PytorchQuantLinearHandler(PytorchQuantWBIOLHandler):
 
     @classmethod
     def prepare_qf(cls, module: QuantLinear):
-        return qF.linear, {'bias': module.bias}
+        return torch.nn.quantized.linear, {'bias': module.bias}
 
 
